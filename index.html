@@ -113,28 +113,30 @@
                     return;
                 }
                 log('Вошли в Presence канала');
-            });
 
-            // Получаем текущих участников
-            channel.presence.get((err, members) => {
-                if (err) {
-                    errorHandler('Ошибка при получении участников Presence: ' + err.message);
-                    return;
-                }
+                // Получаем текущих участников
+                channel.presence.get((err, members) => {
+                    if (err) {
+                        errorHandler('Ошибка при получении участников Presence: ' + err.message);
+                        return;
+                    }
 
-                if (members.length === 1) {
-                    // Если единственный участник, он становится Caller
-                    isCaller = true;
-                    log('Вы первый в комнате — Caller.');
-                    startCall(); // Автоматически начинаем вызов
-                } else {
-                    // Иначе, роль Callee
-                    isCaller = false;
-                    log('В комнате уже есть участник — Вы Callee.');
-                    // Ждём вызова
-                }
+                    log('Текущие участники Presence:', members.map(m => m.clientId));
 
-                setupSignalHandling();
+                    if (members.length === 1) {
+                        // Если единственный участник, он становится Caller
+                        isCaller = true;
+                        log('Вы первый в комнате — Caller.');
+                        startCall(); // Автоматически начинаем вызов
+                    } else {
+                        // Иначе, роль Callee
+                        isCaller = false;
+                        log('В комнате уже есть участник — Вы Callee.');
+                        // Ждём вызова
+                    }
+
+                    setupSignalHandling();
+                });
             });
 
             // Подписываемся на события Presence (новые участники)
@@ -251,7 +253,7 @@
         // ======= ОБРАБОТКА ANSWER (для Caller) =======
         async function handleAnswer(answer) {
             if (!isCaller || !peerConnection) {
-                log('Мы не Caller или нет PC. Игнорируем answer.');
+                log('Мы не Caller или нет peerConnection. Игнорируем answer.');
                 return;
             }
             if (hasSetRemoteDescription) {
