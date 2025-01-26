@@ -39,6 +39,7 @@
         let peerConnection;
         let ably;
         let channel;
+        let isCaller = false; // Роль участника
 
         // Инициализация
         init();
@@ -60,24 +61,52 @@
                 
                 ably.connection.once('connected', () => {
                     log('Подключено к Ably. Client ID: ' + ably.auth.clientId);
-                    setupChannel();
+                    setupPresence();
                 });
-
-                // 3. Настройка кнопки вызова
-                callBtn.disabled = false;
-                callBtn.onclick = startCall;
 
             } catch (err) {
                 errorHandler('Инициализация не удалась: ' + err.message);
             }
         }
 
-        function setupChannel() {
+        function setupPresence() {
             const roomId = getRoomId();
             log('Присоединение к комнате: ' + roomId);
             
             channel = ably.channels.get(`room-${roomId}`);
             
+            // Присоединяемся к Presence
+            channel.presence.enter({ role: 'callee' }, (err) => {
+                if (err) {
+                    errorHandler('Ошибка при входе в Presence: ' + err.message);
+                    return;
+                }
+                log('Вошли в Presence');
+            });
+
+            // Запрашиваем список присутствующих
+            channel.presence.get((err, members) => {
+                if (err) {
+                    errorHandler('Ошибка при получении Presence: ' + err.message);
+                    return;
+                }
+
+                if (members.length === 1) {
+                    // Если я единственный, то я caller
+                    isCaller = true;
+                    log('Вы первый в комнате. Вы — Caller.');
+                    callBtn.disabled = false;
+                } else {
+                    // Иначе я callee
+                    isCaller = false;
+                    log('В комнате уже есть участник. Вы — Callee.');
+                }
+
+                setupSignalHandling();
+            });
+        }
+
+        function setupSignalHandling() {
             channel.subscribe('signal', message => {
                 // Игнорируем сообщения самого себя
                 if (message.clientId === ably.auth.clientId) {
@@ -101,7 +130,14 @@
             });
         }
 
+        callBtn.onclick = startCall;
+
         async function startCall() {
+            if (!isCaller) {
+                log('Вы не являетесь Caller и не можете инициировать вызов.');
+                return;
+            }
+
             try {
                 log('Начало вызова...');
                 peerConnection = createPeerConnection();
@@ -128,17 +164,27 @@
         }
 
         async function handleOffer(offer) {
+            if (isCaller) {
+                log('Вы уже инициируете вызов. Игнорирование предложения.');
+                return;
+            }
+
+            if (peerConnection) {
+                log('PeerConnection уже существует. Возможно, повторный вызов.');
+                return;
+            }
+
             try {
                 log('Обработка полученного предложения...');
                 peerConnection = createPeerConnection();
 
-                // Важно! Добавляем локальные треки во втором участнике
+                // Добавление локальных треков во втором участнике
                 localStream.getTracks().forEach(track => {
                     peerConnection.addTrack(track, localStream);
                 });
 
                 // Установка удалённого описания
-                await peerConnection.setRemoteDescription(offer);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
                 log('Установлено удалённое описание');
 
                 // Создание ответа (answer)
@@ -196,24 +242,28 @@
         }
 
         async function handleAnswer(answer) {
-            if (!peerConnection) {
-                log('PeerConnection не создан для обработки ответа');
-                return;
+            if (isCaller && peerConnection) {
+                try {
+                    log('Обработка полученного ответа...');
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                } catch (err) {
+                    errorHandler('Обработка ответа не удалась: ' + err.message);
+                }
+            } else {
+                log('Не ожидается ответа. Игнорирование.');
             }
-            log('Обработка полученного ответа...');
-            await peerConnection.setRemoteDescription(answer);
         }
 
         async function handleCandidate(candidate) {
-            if (!peerConnection) {
-                log('PeerConnection не создан для обработки ICE-кандидата');
-                return;
-            }
-            try {
-                log('Добавление ICE-кандидата:', candidate);
-                await peerConnection.addIceCandidate(candidate);
-            } catch (err) {
-                log('Ошибка при добавлении кандидата:', err);
+            if (peerConnection) {
+                try {
+                    log('Добавление ICE-кандидата:', candidate);
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (err) {
+                    log('Ошибка при добавлении кандидата:', err);
+                }
+            } else {
+                log('PeerConnection не создан для обработки ICE-кандидата.');
             }
         }
 
