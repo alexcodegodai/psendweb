@@ -24,7 +24,6 @@
             min-width: 300px;
             text-align: left;
         }
-        /* Кнопка полностью удалена */
     </style>
     <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
@@ -97,6 +96,15 @@
                     setupPresence(roomId);
                 });
 
+                // Обработка событий разъединения Ably
+                ably.connection.on('disconnected', () => {
+                    log('Ably: отключено.');
+                });
+
+                ably.connection.on('failed', () => {
+                    log('Ably: соединение потеряно.');
+                });
+
             } catch (err) {
                 errorHandler('Ошибка инициализации: ' + err.message);
             }
@@ -143,6 +151,18 @@
             channel.presence.subscribe('enter', (member) => {
                 if (!isCaller && member.clientId !== ably.auth.clientId) {
                     log('Новый участник присоединился — Вы Callee.');
+                }
+            });
+
+            // Обработка событий выхода участников
+            channel.presence.subscribe('leave', (member) => {
+                if (isCaller && member.clientId !== ably.auth.clientId) {
+                    log('Caller: Участник вышел из комнаты.');
+                    // Можно добавить логику для завершения вызова
+                }
+                if (!isCaller && member.clientId !== ably.auth.clientId) {
+                    log('Callee: Caller вышел из комнаты.');
+                    // Можно добавить логику для уведомления пользователя
                 }
             });
         }
@@ -307,6 +327,9 @@
 
             pc.onconnectionstatechange = () => {
                 log('Connection State:', pc.connectionState);
+                if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    log('Соединение прервано.');
+                }
             };
 
             pc.onicegatheringstatechange = () => {
