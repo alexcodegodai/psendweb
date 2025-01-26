@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Видеозвонок</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+        }
+        video {
+            width: 80%;
+            max-width: 600px;
+            border: 2px solid black;
+            margin: 10px 0;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.3.1/dist/peerjs.min.js"></script>
+    <script src="https://cdn.ably.io/lib/ably.min.js"></script>
+</head>
+<body>
+    <h1>Видеозвонок</h1>
+    <video id="myVideo" autoplay muted></video>
+    <video id="peerVideo" autoplay></video>
+
+    <script>
+        const room = new URLSearchParams(window.location.search).get('room');
+        if (!room) {
+            alert('Не указан room ID. Добавьте ?room=ВАШ_ROOM_ID к URL.');
+            throw new Error('Room ID отсутствует');
+        }
+
+        const myVideo = document.getElementById('myVideo');
+        const peerVideo = document.getElementById('peerVideo');
+
+        // Настройка PeerJS
+        const peer = new Peer({
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    {
+                        urls: 'turn:turn.anyfirewall.com:443',
+                        username: 'webrtc',
+                        credential: 'webrtc'
+                    }
+                ]
+            }
+        });
+
+        // Настройка Ably
+        const ably = new Ably.Realtime('QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA');
+        const channel = ably.channels.get(`room-${room}`);
+
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                myVideo.srcObject = stream;
+
+                peer.on('open', id => {
+                    console.log('Peer подключён с ID:', id);
+
+                    channel.subscribe('signal', message => {
+                        console.log('Получено сообщение Ably:', message);
+
+                        if (message.data.type === 'offer') {
+                            const call = peer.call(message.data.peerId, stream);
+                            call.on('stream', remoteStream => {
+                                console.log('Получен видеопоток от собеседника');
+                                peerVideo.srcObject = remoteStream;
+                            });
+                            call.on('error', err => {
+                                console.error('Ошибка во время вызова:', err);
+                            });
+                        }
+                    });
+
+                    channel.publish('signal', { type: 'ready', peerId: id });
+                });
+
+                peer.on('call', call => {
+                    console.log('Входящий вызов от:', call.peer);
+                    call.answer(stream);
+                    call.on('stream', remoteStream => {
+                        console.log('Получен видеопоток от собеседника');
+                        peerVideo.srcObject = remoteStream;
+                    });
+                    call.on('error', err => {
+                        console.error('Ошибка во время вызова:', err);
+                    });
+                });
+
+                peer.on('error', err => {
+                    console.error('Ошибка PeerJS:', err);
+                });
+            })
+            .catch(err => {
+                console.error('Ошибка доступа к камере или микрофону:', err);
+                alert('Не удалось получить доступ к камере или микрофону. Проверьте настройки устройства.');
+            });
+
+        // Общий лог для обработки событий Ably
+        ably.connection.on((stateChange) => {
+            console.log('Ably connection state:', stateChange.current);
+        });
+
+        peer.on('disconnected', () => {
+            console.warn('PeerJS отключён');
+        });
+
+        peer.on('close', () => {
+            console.warn('PeerJS соединение закрыто');
+        });
+    </script>
+</body>
+</html>
