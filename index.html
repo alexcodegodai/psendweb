@@ -1,114 +1,225 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Видеозвонок</title>
+    <title>WebRTC Видеозвонок</title>
     <style>
         body {
             font-family: Arial, sans-serif;
             text-align: center;
+            background: #f0f0f0;
         }
         video {
-            width: 80%;
+            width: 45%;
             max-width: 600px;
-            border: 2px solid black;
-            margin: 10px 0;
+            border: 2px solid #333;
+            border-radius: 8px;
+            margin: 10px;
+            background: #000;
+        }
+        #controls {
+            margin: 20px;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #status {
+            color: #666;
+            margin: 15px;
+            font-size: 14px;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/peerjs@1.3.1/dist/peerjs.min.js"></script>
-    <script src="https://cdn.ably.io/lib/ably.min.js"></script>
+    <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
-    <h1>Видеозвонок</h1>
-    <video id="myVideo" autoplay muted></video>
-    <video id="peerVideo" autoplay></video>
+    <h1>WebRTC Видеозвонок</h1>
+    <div id="status">Инициализация...</div>
+    <div id="controls">
+        <button id="callBtn">Начать звонок</button>
+    </div>
+    <video id="localVideo" autoplay muted></video>
+    <video id="remoteVideo" autoplay></video>
 
     <script>
-        const room = new URLSearchParams(window.location.search).get('room');
-        if (!room) {
-            alert('Не указан room ID. Добавьте ?room=ВАШ_ROOM_ID к URL.');
-            throw new Error('Room ID отсутствует');
+        // Конфигурация
+        const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
+        const ICE_SERVERS = [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { 
+                urls: 'turn:turn.anyfirewall.com:443',
+                username: 'webrtc',
+                credential: 'webrtc'
+            }
+        ];
+
+        // Элементы DOM
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const callBtn = document.getElementById('callBtn');
+        const statusEl = document.getElementById('status');
+        
+        let localStream;
+        let peer;
+        let ably;
+        let channel;
+
+        // Инициализация
+        init();
+
+        async function init() {
+            try {
+                // Получение медиапотока
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: true 
+                });
+                localVideo.srcObject = localStream;
+                
+                // Инициализация Peer
+                peer = new Peer({
+                    config: { iceServers: ICE_SERVERS }
+                });
+
+                // Инициализация Ably
+                ably = new Ably.Realtime(ABLY_KEY);
+                
+                // Получение room ID из URL
+                const urlParams = new URLSearchParams(window.location.search);
+                const roomId = urlParams.get('room') || 'default-room';
+                
+                channel = ably.channels.get(`room-${roomId}`);
+                
+                setupEventListeners();
+                updateStatus('Готов к подключению', 'green');
+                callBtn.disabled = false;
+
+            } catch (err) {
+                console.error('Ошибка инициализации:', err);
+                updateStatus('Ошибка: ' + err.message, 'red');
+            }
         }
 
-        const myVideo = document.getElementById('myVideo');
-        const peerVideo = document.getElementById('peerVideo');
-
-        // Настройка PeerJS
-        const peer = new Peer({
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    {
-                        urls: 'turn:turn.anyfirewall.com:443',
-                        username: 'webrtc',
-                        credential: 'webrtc'
-                    }
-                ]
-            }
-        });
-
-        // Настройка Ably
-        const ably = new Ably.Realtime('QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA');
-        const channel = ably.channels.get(`room-${room}`);
-
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-            .then(stream => {
-                myVideo.srcObject = stream;
-
-                peer.on('open', id => {
-                    console.log('Peer подключён с ID:', id);
-
-                    channel.subscribe('signal', message => {
-                        console.log('Получено сообщение Ably:', message);
-
-                        if (message.data.type === 'offer') {
-                            const call = peer.call(message.data.peerId, stream);
-                            call.on('stream', remoteStream => {
-                                console.log('Получен видеопоток от собеседника');
-                                peerVideo.srcObject = remoteStream;
-                            });
-                            call.on('error', err => {
-                                console.error('Ошибка во время вызова:', err);
-                            });
-                        }
-                    });
-
-                    channel.publish('signal', { type: 'ready', peerId: id });
-                });
-
-                peer.on('call', call => {
-                    console.log('Входящий вызов от:', call.peer);
-                    call.answer(stream);
-                    call.on('stream', remoteStream => {
-                        console.log('Получен видеопоток от собеседника');
-                        peerVideo.srcObject = remoteStream;
-                    });
-                    call.on('error', err => {
-                        console.error('Ошибка во время вызова:', err);
-                    });
-                });
-
-                peer.on('error', err => {
-                    console.error('Ошибка PeerJS:', err);
-                });
-            })
-            .catch(err => {
-                console.error('Ошибка доступа к камере или микрофону:', err);
-                alert('Не удалось получить доступ к камере или микрофону. Проверьте настройки устройства.');
+        function setupEventListeners() {
+            // PeerJS события
+            peer.on('open', id => {
+                console.log('Peer ID:', id);
+                channel.publish('presence', { type: 'join', peerId: id });
             });
 
-        // Общий лог для обработки событий Ably
-        ably.connection.on((stateChange) => {
-            console.log('Ably connection state:', stateChange.current);
-        });
+            peer.on('call', call => {
+                console.log('Входящий вызов от:', call.peer);
+                updateStatus('Входящий вызов...', 'orange');
+                
+                call.answer(localStream);
+                call.on('stream', handleRemoteStream);
+                call.on('close', () => updateStatus('Соединение закрыто', 'red'));
+            });
 
-        peer.on('disconnected', () => {
-            console.warn('PeerJS отключён');
-        });
+            peer.on('error', err => {
+                console.error('PeerJS ошибка:', err);
+                updateStatus('Ошибка: ' + err.message, 'red');
+            });
 
-        peer.on('close', () => {
-            console.warn('PeerJS соединение закрыто');
+            // Ably события
+            channel.subscribe('signal', handleAblyMessage);
+            
+            // Кнопка звонка
+            callBtn.addEventListener('click', startCall);
+        }
+
+        function handleAblyMessage(message) {
+            const data = message.data;
+            if (data.peerId === peer.id) return;
+
+            switch(data.type) {
+                case 'offer':
+                    handleOffer(data.offer, data.peerId);
+                    break;
+                case 'answer':
+                    handleAnswer(data.answer);
+                    break;
+                case 'candidate':
+                    handleCandidate(data.candidate);
+                    break;
+            }
+        }
+
+        async function startCall() {
+            updateStatus('Установка соединения...', 'blue');
+            
+            // Получаем список участников комнаты
+            const presence = await channel.presence.get();
+            const otherPeers = presence.filter(m => m.clientId !== peer.id);
+            
+            if (otherPeers.length === 0) {
+                return updateStatus('Нет участников в комнате', 'orange');
+            }
+
+            const call = peer.call(otherPeers[0].clientId, localStream);
+            
+            call.on('stream', handleRemoteStream);
+            call.on('close', () => updateStatus('Соединение закрыто', 'red'));
+            
+            call.on('icecandidate', candidate => {
+                if (candidate) {
+                    channel.publish('signal', {
+                        type: 'candidate',
+                        candidate,
+                        peerId: peer.id
+                    });
+                }
+            });
+        }
+
+        function handleRemoteStream(remoteStream) {
+            remoteVideo.srcObject = remoteStream;
+            updateStatus('Соединение установлено', 'green');
+        }
+
+        async function handleOffer(offer, senderId) {
+            const connection = peer.call(senderId, localStream);
+            await connection.setRemoteDescription(offer);
+            
+            const answer = await connection.createAnswer();
+            await connection.setLocalDescription(answer);
+            
+            channel.publish('signal', {
+                type: 'answer',
+                answer: answer,
+                peerId: peer.id
+            });
+        }
+
+        async function handleAnswer(answer) {
+            const connections = peer.connections[answer.peerId];
+            if (connections && connections.length > 0) {
+                await connections[0].setRemoteDescription(answer);
+            }
+        }
+
+        function handleCandidate(candidate) {
+            peer.connections[candidate.peerId]?.forEach(conn => {
+                conn.addIceCandidate(new RTCIceCandidate(candidate));
+            });
+        }
+
+        function updateStatus(text, color) {
+            statusEl.textContent = text;
+            statusEl.style.color = color;
+        }
+
+        // Очистка при закрытии
+        window.addEventListener('beforeunload', () => {
+            if (peer) peer.destroy();
+            if (ably) ably.close();
         });
     </script>
 </body>
