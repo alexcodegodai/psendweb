@@ -24,7 +24,7 @@
             min-width: 300px;
             text-align: left;
         }
-        /* Кнопка скрыта полностью, так как она не нужна */
+        /* Кнопка полностью удалена */
     </style>
     <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
@@ -41,14 +41,17 @@
         // Ваш Ably-ключ
         const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
 
-        // STUN и TURN (публичный)
+        // STUN и TURN (на начальном этапе используем только STUN)
         const ICE_SERVERS = [
-            { urls: 'stun:stun.l.google.com:19302' }, // STUN
+            { urls: 'stun:stun.l.google.com:19302' } // STUN
+            // При необходимости добавьте TURN-сервер
+            /*
             {
                 urls: 'turn:relay.backups.cz:3478',
                 username: 'webrtc',
                 credential: 'turnserver'
             }
+            */
         ];
 
         // ======= ЭЛЕМЕНТЫ СТРАНИЦЫ =======
