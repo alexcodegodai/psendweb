@@ -93,6 +93,7 @@
 
                 ably.connection.once('connected', () => {
                     log('Ably: подключено. Client ID:', ably.auth.clientId);
+                    setupSignalHandling(); // Подписка на сигналинг до входа в Presence
                     setupPresence(roomId);
                 });
 
@@ -108,6 +109,35 @@
             } catch (err) {
                 errorHandler('Ошибка инициализации: ' + err.message);
             }
+        }
+
+        // ======= ПОДПИСКА НА СИГНАЛИНГ =======
+        function setupSignalHandling() {
+            if (!channel) {
+                log('Канал ещё не определён.');
+                return;
+            }
+
+            channel.subscribe('signal', msg => {
+                // Игнорируем свои сообщения
+                if (msg.clientId === ably.auth.clientId) {
+                    log('Игнорируем своё сообщение.');
+                    return;
+                }
+
+                log('Получено сообщение:', msg.data);
+                switch (msg.data.type) {
+                    case 'offer':
+                        handleOffer(msg.data.offer);
+                        break;
+                    case 'answer':
+                        handleAnswer(msg.data.answer);
+                        break;
+                    case 'candidate':
+                        handleCandidate(msg.data.candidate);
+                        break;
+                }
+            });
         }
 
         // ======= PRESENCE ДЛЯ ОПРЕДЕЛЕНИЯ РОЛИ =======
@@ -143,7 +173,7 @@
                         // Ждём вызова
                     }
 
-                    setupSignalHandling();
+                    // Можно добавить дополнительную логику здесь, если необходимо
                 });
             });
 
@@ -163,30 +193,6 @@
                 if (!isCaller && member.clientId !== ably.auth.clientId) {
                     log('Callee: Caller вышел из комнаты.');
                     // Можно добавить логику для уведомления пользователя
-                }
-            });
-        }
-
-        // ======= ПОДПИСКА НА СИГНАЛИНГ =======
-        function setupSignalHandling() {
-            channel.subscribe('signal', msg => {
-                // Игнорируем свои сообщения
-                if (msg.clientId === ably.auth.clientId) {
-                    log('Игнорируем своё сообщение.');
-                    return;
-                }
-
-                log('Получено сообщение:', msg.data);
-                switch (msg.data.type) {
-                    case 'offer':
-                        handleOffer(msg.data.offer);
-                        break;
-                    case 'answer':
-                        handleAnswer(msg.data.answer);
-                        break;
-                    case 'candidate':
-                        handleCandidate(msg.data.candidate);
-                        break;
                 }
             });
         }
