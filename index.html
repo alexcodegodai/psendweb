@@ -1,20 +1,50 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
+    <meta charset="UTF-8">
     <title>WebRTC Debug</title>
     <style>
-        video { width: 300px; margin: 10px; border: 1px solid #ccc; }
-        #status { padding: 10px; margin: 10px; background: #f0f0f0; }
-        #callBtn { padding: 10px 20px; font-size: 16px; }
-        #callBtn.hidden { display: none; }
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+        video {
+            width: 45%;
+            margin: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #status {
+            padding: 10px;
+            margin: 10px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            display: inline-block;
+            min-width: 300px;
+            text-align: left;
+        }
+        #callBtn {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 20px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            background-color: #4CAF50;
+            color: white;
+        }
+        #callBtn.hidden {
+            display: none;
+        }
     </style>
     <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
     <h1>WebRTC Debug</h1>
-    <div id="status">Initializing...</div>
-    <button id="callBtn" disabled>Start Call</button><br>
+    <div id="status">Инициализация...</div>
+    <button id="callBtn" disabled>Начать Вызов</button><br>
     <video id="localVideo" autoplay muted playsinline></video>
     <video id="remoteVideo" autoplay playsinline></video>
 
@@ -36,6 +66,7 @@
         const callBtn = document.getElementById('callBtn');
         const statusEl = document.getElementById('status');
 
+        // Переменные
         let localStream;
         let peerConnection;
         let ably;
@@ -43,6 +74,7 @@
         let isCaller = false; // Роль участника
         let hasHandledOffer = false; // Флаг обработки предложения
         let hasSetRemoteDescription = false; // Флаг установки удалённого описания
+        let pendingCandidates = []; // Очередь ICE-кандидатов
 
         // Инициализация
         init();
@@ -61,7 +93,7 @@
                     key: ABLY_KEY,
                     clientId: 'user-' + Math.random().toString(16).slice(2) // Генерация уникального clientId
                 });
-                
+
                 ably.connection.once('connected', () => {
                     log('Подключено к Ably. Client ID: ' + ably.auth.clientId);
                     setupPresence();
@@ -163,7 +195,7 @@
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 log('Создано предложение:', offer);
-                
+
                 // Отправка предложения через канал
                 channel.publish('signal', {
                     type: 'offer',
@@ -204,6 +236,9 @@
                 // Установка удалённого описания
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
                 log('Установлено удалённое описание');
+
+                // Обработка накопленных ICE-кандидатов
+                processPendingCandidates();
 
                 // Создание ответа (answer)
                 const answer = await peerConnection.createAnswer();
@@ -272,6 +307,10 @@
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
                         hasSetRemoteDescription = true;
                         log('Установлено удалённое описание с answer');
+
+                        // Обработка накопленных ICE-кандидатов
+                        processPendingCandidates();
+
                     } catch (err) {
                         errorHandler('Обработка ответа не удалась: ' + err.message);
                     }
@@ -285,14 +324,34 @@
 
         async function handleCandidate(candidate) {
             if (peerConnection) {
-                try {
-                    log('Добавление ICE-кандидата:', candidate);
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-                } catch (err) {
-                    log('Ошибка при добавлении кандидата:', err);
+                if (peerConnection.remoteDescription) {
+                    try {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                        log('Добавлен ICE-кандидат:', candidate);
+                    } catch (err) {
+                        log('Ошибка при добавлении кандидата:', err);
+                    }
+                } else {
+                    // Если remoteDescription ещё не установлено, сохраняем кандидата
+                    pendingCandidates.push(new RTCIceCandidate(candidate));
+                    log('Добавлен ICE-кандидат в очередь:', candidate);
                 }
             } else {
                 log('PeerConnection не создан для обработки ICE-кандидата.');
+            }
+        }
+
+        function processPendingCandidates() {
+            if (pendingCandidates.length > 0 && peerConnection.remoteDescription) {
+                pendingCandidates.forEach(async (candidate) => {
+                    try {
+                        await peerConnection.addIceCandidate(candidate);
+                        log('ICE-кандидат добавлен из очереди:', candidate);
+                    } catch (err) {
+                        log('Ошибка при добавлении кандидата из очереди:', err);
+                    }
+                });
+                pendingCandidates = []; // Очищаем очередь после обработки
             }
         }
 
