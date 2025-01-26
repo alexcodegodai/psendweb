@@ -6,6 +6,7 @@
         video { width: 300px; margin: 10px; border: 1px solid #ccc; }
         #status { padding: 10px; margin: 10px; background: #f0f0f0; }
         #callBtn { padding: 10px 20px; font-size: 16px; }
+        #callBtn.hidden { display: none; }
     </style>
     <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
@@ -98,10 +99,13 @@
                     isCaller = true;
                     log('Вы первый в комнате. Вы — Caller.');
                     callBtn.disabled = false;
+                    callBtn.classList.remove('hidden');
                 } else {
                     // Иначе я callee
                     isCaller = false;
                     log('В комнате уже есть участник. Вы — Callee.');
+                    callBtn.disabled = true;
+                    callBtn.classList.add('hidden'); // Скрываем кнопку для Callee
                 }
 
                 setupSignalHandling();
