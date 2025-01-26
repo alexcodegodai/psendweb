@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>P2P Video</title>
+    <title>1:1 Video Call</title>
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
@@ -9,64 +9,118 @@
     <video id="remote" autoplay></video>
 
 <script>
-const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA'; // Ваш ключ
+const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
 const roomId = new URLSearchParams(location.search).get('room') || 'default';
 
-let pc = new RTCPeerConnection({
-    iceServers: [{urls: "stun:stun.l.google.com:19302"}]
-});
+let pc = null;
+let isCaller = false;
 
-// 1. Получаем медиапоток
-navigator.mediaDevices.getUserMedia({video: true, audio: true})
-.then(stream => {
-    document.getElementById('local').srcObject = stream;
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-});
+// 1. Получение медиапотока
+async function start() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+        document.getElementById('local').srcObject = stream;
+        setupConnection(stream);
+    } catch(err) {
+        console.error('Ошибка доступа к медиаустройствам:', err);
+    }
+}
 
-// 2. Подключаемся к Ably
-const ably = new Ably.Realtime(ABLY_KEY);
-const channel = ably.channels.get(`video-room-${roomId}`);
-
-// 3. Определяем роль
-channel.presence.enter('user', async () => {
-    const members = await channel.presence.get();
-    const isCaller = members.length === 1;
-    
-    // Сигнальный обмен
-    channel.subscribe(msg => {
-        if(msg.clientId === ably.auth.clientId) return;
-        
-        if(msg.name === 'offer') {
-            pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-            pc.createAnswer().then(answer => {
-                pc.setLocalDescription(answer);
-                channel.publish('answer', answer);
-            });
-        }
-        
-        if(msg.name === 'answer') pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-        
-        if(msg.name === 'candidate') pc.addIceCandidate(new RTCIceCandidate(msg.data));
+// 2. Настройка подключения
+function setupConnection(stream) {
+    pc = new RTCPeerConnection({
+        iceServers: [{urls: "stun:stun.l.google.com:19302"}]
     });
 
-    // Caller логика
-    if(isCaller) {
-        pc.createOffer().then(offer => {
-            pc.setLocalDescription(offer);
-            channel.publish('offer', offer);
+    // Добавляем локальные треки
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+    // Настройка Ably
+    const ably = new Ably.Realtime(ABLY_KEY);
+    const channel = ably.channels.get(`video-${roomId}`);
+
+    // 3. Определение роли с гарантией атомарности
+    channel.presence.enter('user', async () => {
+        const members = await channel.presence.get();
+        isCaller = members.length === 1;
+        
+        console.log(`Вы ${isCaller ? 'Caller' : 'Callee'}`);
+
+        // Сигнальный обмен
+        channel.subscribe(msg => {
+            if(msg.clientId === ably.auth.clientId) return;
+
+            switch(msg.name) {
+                case 'offer':
+                    handleOffer(msg.data);
+                    break;
+                case 'answer':
+                    handleAnswer(msg.data);
+                    break;
+                case 'candidate':
+                    handleCandidate(msg.data);
+                    break;
+            }
         });
+
+        if(isCaller) {
+            createOffer();
+        }
+    });
+
+    // ICE обработчики
+    pc.onicecandidate = e => {
+        if(e.candidate) {
+            channel.publish('candidate', e.candidate);
+        }
+    };
+
+    pc.ontrack = e => {
+        if(!document.getElementById('remote').srcObject) {
+            document.getElementById('remote').srcObject = e.streams[0];
+        }
+    };
+}
+
+async function createOffer() {
+    try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ably.channels.get(`video-${roomId}`).publish('offer', offer);
+    } catch(err) {
+        console.error('Ошибка создания offer:', err);
     }
-});
+}
 
-// ICE кандидаты
-pc.onicecandidate = e => {
-    if(e.candidate) channel.publish('candidate', e.candidate);
-};
+async function handleOffer(offer) {
+    try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ably.channels.get(`video-${roomId}`).publish('answer', answer);
+    } catch(err) {
+        console.error('Ошибка обработки offer:', err);
+    }
+}
 
-// Удаленный поток
-pc.ontrack = e => {
-    document.getElementById('remote').srcObject = e.streams[0];
-};
+async function handleAnswer(answer) {
+    try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    } catch(err) {
+        console.error('Ошибка обработки answer:', err);
+    }
+}
+
+async function handleCandidate(candidate) {
+    try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch(err) {
+        console.error('Ошибка добавления кандидата:', err);
+    }
+}
+
+// Запуск
+start();
 </script>
 </body>
 </html>
