@@ -4,127 +4,374 @@
     <meta charset="UTF-8">
     <title>WebRTC Automatic Role Assignment</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
-        video { width: 45%; margin: 10px; border: 1px solid #ccc; border-radius: 4px; }
-        #status { padding: 10px; margin: 10px; background: #f0f0f0; border-radius: 4px; display: inline-block; min-width: 300px; text-align: left; }
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+        video {
+            width: 45%;
+            margin: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #status {
+            padding: 10px;
+            margin: 10px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            display: inline-block;
+            min-width: 300px;
+            text-align: left;
+        }
+        /* Кнопка полностью удалена */
     </style>
+    <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
     <h1>WebRTC Automatic Role Assignment</h1>
     <div id="status">Инициализация...</div>
+    <br>
     <video id="localVideo" autoplay muted playsinline></video>
     <video id="remoteVideo" autoplay playsinline></video>
 
-<script>
-const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+    <script>
+        // ======= КОНФИГУРАЦИЯ =======
+        // Ваш Ably-ключ
+        const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
 
-let localStream, peerConnection, ably, channel, pendingCandidates = [];
-let isCaller = false;
+        // STUN и TURN (на начальном этапе используем только STUN)
+        const ICE_SERVERS = [
+            { urls: 'stun:stun.l.google.com:19302' } // STUN
+            // При необходимости добавьте TURN-сервер
+            /*
+            {
+                urls: 'turn:relay.backups.cz:3478',
+                username: 'webrtc',
+                credential: 'turnserver'
+            }
+            */
+        ];
 
-async function init() {
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-        
-        const roomId = new URLSearchParams(window.location.search).get('room') || 'default-room';
-        
-        ably = new Ably.Realtime({
-            key: ABLY_KEY,
-            clientId: 'user-' + Math.random().toString(36).slice(2, 8)
-        });
+        // ======= ЭЛЕМЕНТЫ СТРАНИЦЫ =======
+        const statusEl = document.getElementById('status');
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
 
-        ably.connection.once('connected', () => {
-            setupPresence(roomId);
-        });
+        // ======= ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =======
+        let localStream;
+        let peerConnection;
+        let ably;
+        let channel;
+        let pendingCandidates = [];
 
-    } catch (err) {
-        errorHandler('Ошибка инициализации: ' + err.message);
-    }
-}
+        // Роли
+        let isCaller = false; // true, если роль=caller
+        let hasSetRemoteDescription = false;
+        let hasHandledOffer = false;
 
-function setupPresence(roomId) {
-    channel = ably.channels.get(`room-${roomId}`);
+        init();
 
-    channel.presence.get((err, members) => {
-        if (err) return errorHandler('Ошибка получения участников: ' + err.message);
-        
-        if (members.length === 0) {
-            channel.presence.enterClient(ably.auth.clientId, { role: 'caller' }, (err) => {
-                if (err) return errorHandler('Ошибка входа как caller: ' + err.message);
-                isCaller = true;
-                log('Вы Caller. Начинаем вызов...');
-                startCall();
-                setupSignalHandling();
+        async function init() {
+            try {
+                // 1. Получаем доступ к камере и микрофону
+                log('Получаем доступ к камере/микрофону...');
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                log('Локальные медиа-устройства получены.');
+
+                // 2. Определяем roomId из URL
+                const { roomId } = getParams();
+                log('Комната:', roomId);
+
+                // 3. Подключаемся к Ably
+                log('Подключаемся к Ably...');
+                ably = new Ably.Realtime({
+                    key: ABLY_KEY,
+                    clientId: 'user-' + Math.random().toString(16).slice(2)
+                });
+
+                ably.connection.once('connected', () => {
+                    log('Ably: подключено. Client ID:', ably.auth.clientId);
+                    setupPresence(roomId);
+                });
+
+            } catch (err) {
+                errorHandler('Ошибка инициализации: ' + err.message);
+            }
+        }
+
+        // ======= PRESENCE ДЛЯ ОПРЕДЕЛЕНИЯ РОЛИ =======
+        function setupPresence(roomId) {
+            channel = ably.channels.get(`room-${roomId}`);
+
+            // Входим в Presence как 'participant'
+            channel.presence.enter({ role: 'participant' }, (err) => {
+                if (err) {
+                    errorHandler('Ошибка при входе в Presence: ' + err.message);
+                    return;
+                }
+                log('Вошли в Presence канала');
+
+                // Получаем текущих участников
+                channel.presence.get((err, members) => {
+                    if (err) {
+                        errorHandler('Ошибка при получении участников Presence: ' + err.message);
+                        return;
+                    }
+
+                    log('Текущие участники Presence:', members.map(m => m.clientId));
+
+                    if (members.length === 1) {
+                        // Если единственный участник, он становится Caller
+                        isCaller = true;
+                        log('Вы первый в комнате — Caller.');
+                        startCall(); // Автоматически начинаем вызов
+                    } else {
+                        // Иначе, роль Callee
+                        isCaller = false;
+                        log('В комнате уже есть участник — Вы Callee.');
+                        // Ждём вызова
+                    }
+
+                    setupSignalHandling();
+                });
             });
-        } else {
-            channel.presence.enter({ role: 'callee' }, (err) => {
-                if (err) return errorHandler('Ошибка входа как callee: ' + err.message);
-                isCaller = false;
-                log('Вы Callee. Ожидаем offer...');
-                setupSignalHandling();
+
+            // Подписываемся на события Presence (новые участники)
+            channel.presence.subscribe('enter', (member) => {
+                if (!isCaller && member.clientId !== ably.auth.clientId) {
+                    log('Новый участник присоединился — Вы Callee.');
+                }
             });
         }
-    });
 
-    channel.presence.subscribe('enter', member => {
-        if (member.clientId !== ably.auth.clientId && isCaller) {
-            log('Обнаружен новый участник. Повторная отправка offer...');
-            startCall();
+        // ======= ПОДПИСКА НА СИГНАЛИНГ =======
+        function setupSignalHandling() {
+            channel.subscribe('signal', msg => {
+                // Игнорируем свои сообщения
+                if (msg.clientId === ably.auth.clientId) {
+                    log('Игнорируем своё сообщение.');
+                    return;
+                }
+
+                log('Получено сообщение:', msg.data);
+                switch (msg.data.type) {
+                    case 'offer':
+                        handleOffer(msg.data.offer);
+                        break;
+                    case 'answer':
+                        handleAnswer(msg.data.answer);
+                        break;
+                    case 'candidate':
+                        handleCandidate(msg.data.candidate);
+                        break;
+                }
+            });
         }
-    });
-}
 
-function setupSignalHandling() {
-    channel.subscribe('signal', msg => {
-        if (msg.clientId === ably.auth.clientId) return;
+        // ======= START CALL (только для Caller) =======
+        async function startCall() {
+            if (!isCaller) {
+                log('Вы не Caller. Нельзя инициировать вызов.');
+                return;
+            }
+            if (peerConnection) {
+                log('PeerConnection уже создан. Повторный вызов невозможен.');
+                return;
+            }
 
-        switch(msg.data.type) {
-            case 'offer': handleOffer(msg.data.offer); break;
-            case 'answer': handleAnswer(msg.data.answer); break;
-            case 'candidate': handleCandidate(msg.data.candidate); break;
+            try {
+                log('Caller: Начинаем вызов...');
+                peerConnection = createPeerConnection();
+                // Добавляем треки
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Создаём и отправляем offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                log('Создано предложение (offer).');
+
+                channel.publish('signal', {
+                    type: 'offer',
+                    offer
+                });
+            } catch (err) {
+                errorHandler('Ошибка startCall: ' + err.message);
+            }
         }
-    });
-}
 
-async function startCall() {
-    if (!isCaller || peerConnection) return;
-    
-    try {
-        peerConnection = createPeerConnection();
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        channel.publish('signal', { type: 'offer', offer });
-    } catch(err) {
-        errorHandler('Ошибка вызова: ' + err.message);
-    }
-}
+        // ======= ОБРАБОТКА OFFER (для Callee) =======
+        async function handleOffer(offer) {
+            // Если мы Caller, игнорируем чужой offer
+            if (isCaller) {
+                log('Мы Caller, игнорируем чужой offer.');
+                return;
+            }
+            if (hasHandledOffer) {
+                log('Offer уже был обработан. Игнорируем повтор.');
+                return;
+            }
+            if (peerConnection) {
+                log('PeerConnection уже создан, возможно повтор? Игнорируем.');
+                return;
+            }
 
-async function handleOffer(offer) {
-    if (isCaller || peerConnection) return;
-    
-    try {
-        peerConnection = createPeerConnection();
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        
-        await peerConnection.setRemoteDescription(offer);
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        channel.publish('signal', { type: 'answer', answer });
-        
-        processPendingCandidates();
-    } catch(err) {
-        errorHandler('Ошибка обработки offer: ' + err.message);
-    }
-}
+            try {
+                log('Callee: получен offer, обрабатываем...');
+                hasHandledOffer = true;
 
-// Остальные функции (createPeerConnection, handleAnswer, handleCandidate, processPendingCandidates) 
-// остаются без изменений из вашего оригинального кода
+                peerConnection = createPeerConnection();
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
 
-init();
-</script>
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                log('RemoteDescription установлен (offer).');
+
+                // Обработка отложенных ICE-кандидатов
+                processPendingCandidates();
+
+                // Создаём answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                log('Callee: Answer создан.');
+
+                // Отправляем answer
+                channel.publish('signal', {
+                    type: 'answer',
+                    answer
+                });
+            } catch (err) {
+                errorHandler('Ошибка handleOffer: ' + err.message);
+            }
+        }
+
+        // ======= ОБРАБОТКА ANSWER (для Caller) =======
+        async function handleAnswer(answer) {
+            if (!isCaller || !peerConnection) {
+                log('Мы не Caller или нет peerConnection. Игнорируем answer.');
+                return;
+            }
+            if (hasSetRemoteDescription) {
+                log('Answer уже устанавливался. Игнорируем повтор.');
+                return;
+            }
+
+            if (peerConnection.signalingState === 'have-local-offer') {
+                try {
+                    log('Caller: получен answer, устанавливаем remoteDescription...');
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    hasSetRemoteDescription = true;
+                    log('RemoteDescription (answer) установлен.');
+
+                    processPendingCandidates();
+                } catch (err) {
+                    errorHandler('Ошибка handleAnswer: ' + err.message);
+                }
+            } else {
+                log('Состояние signalingState не have-local-offer. Игнорируем answer.');
+            }
+        }
+
+        // ======= СОЗДАНИЕ PEERCONNECTION =======
+        function createPeerConnection() {
+            log('Создаём RTCPeerConnection...');
+            const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+            pc.onicecandidate = e => {
+                if (e.candidate) {
+                    log('Отправляем ICE-кандидата:', e.candidate);
+                    channel.publish('signal', {
+                        type: 'candidate',
+                        candidate: e.candidate
+                    });
+                }
+            };
+
+            pc.ontrack = e => {
+                log('Получен удалённый трек:', e.streams);
+                if (!remoteVideo.srcObject || remoteVideo.srcObject !== e.streams[0]) {
+                    remoteVideo.srcObject = e.streams[0];
+                    log('Удалённое видео/аудио установлено -> remoteVideo.');
+                }
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                log('ICE Connection State:', pc.iceConnectionState);
+                statusEl.textContent = 'ICE State: ' + pc.iceConnectionState;
+            };
+
+            pc.onconnectionstatechange = () => {
+                log('Connection State:', pc.connectionState);
+            };
+
+            pc.onicegatheringstatechange = () => {
+                log('ICE Gathering State:', pc.iceGatheringState);
+            };
+
+            return pc;
+        }
+
+        // ======= ОБРАБОТКА ICE-CANDIDATES =======
+        async function handleCandidate(candidate) {
+            if (!peerConnection) {
+                log('Нет PC, откладываем кандидата.');
+                pendingCandidates.push(new RTCIceCandidate(candidate));
+                return;
+            }
+
+            if (!peerConnection.remoteDescription) {
+                log('RemoteDescription ещё нет, кандидат в очередь:', candidate);
+                pendingCandidates.push(new RTCIceCandidate(candidate));
+            } else {
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                    log('Кандидат добавлен сразу:', candidate);
+                } catch (err) {
+                    log('Ошибка addIceCandidate:', err);
+                }
+            }
+        }
+
+        // ======= ОБРАБОТКА ОТЛОЖЕННЫХ КАНДИДАТОВ =======
+        function processPendingCandidates() {
+            if (!peerConnection || !peerConnection.remoteDescription) return;
+            if (pendingCandidates.length > 0) {
+                log('Обработка отложенных кандидатов:', pendingCandidates.length, 'шт.');
+                pendingCandidates.forEach(async cand => {
+                    try {
+                        await peerConnection.addIceCandidate(cand);
+                        log('Кандидат добавлен из очереди:', cand);
+                    } catch (err) {
+                        log('Ошибка при добавлении из очереди:', err);
+                    }
+                });
+                pendingCandidates = [];
+            }
+        }
+
+        // ======= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =======
+        function getParams() {
+            // room=...
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomId = urlParams.get('room') || 'default-room';
+            return { roomId };
+        }
+
+        function log(...args) {
+            console.log('[DEBUG]', ...args);
+            statusEl.textContent = args.join(' ');
+        }
+
+        function errorHandler(msg) {
+            console.error('[ERROR]', msg);
+            statusEl.textContent = 'Ошибка: ' + msg;
+            statusEl.style.color = 'red';
+        }
+    </script>
 </body>
 </html>
