@@ -40,6 +40,8 @@
         let ably;
         let channel;
         let isCaller = false; // Роль участника
+        let hasHandledOffer = false; // Флаг обработки предложения
+        let hasSetRemoteDescription = false; // Флаг установки удалённого описания
 
         // Инициализация
         init();
@@ -138,8 +140,14 @@
                 return;
             }
 
+            if (peerConnection) {
+                log('PeerConnection уже существует. Невозможно инициировать новый вызов.');
+                return;
+            }
+
             try {
                 log('Начало вызова...');
+                callBtn.disabled = true; // Отключаем кнопку после инициации вызова
                 peerConnection = createPeerConnection();
 
                 // Добавление локальных треков в PeerConnection
@@ -169,12 +177,18 @@
                 return;
             }
 
+            if (hasHandledOffer) {
+                log('Предложение уже обработано. Игнорирование.');
+                return;
+            }
+
             if (peerConnection) {
                 log('PeerConnection уже существует. Возможно, повторный вызов.');
                 return;
             }
 
             try {
+                hasHandledOffer = true;
                 log('Обработка полученного предложения...');
                 peerConnection = createPeerConnection();
 
@@ -243,11 +257,22 @@
 
         async function handleAnswer(answer) {
             if (isCaller && peerConnection) {
-                try {
-                    log('Обработка полученного ответа...');
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-                } catch (err) {
-                    errorHandler('Обработка ответа не удалась: ' + err.message);
+                if (hasSetRemoteDescription) {
+                    log('Remote description уже установлено. Игнорирование дополнительного ответа.');
+                    return;
+                }
+
+                if (peerConnection.signalingState === 'have-local-offer') {
+                    try {
+                        log('Обработка полученного ответа...');
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                        hasSetRemoteDescription = true;
+                        log('Установлено удалённое описание с answer');
+                    } catch (err) {
+                        errorHandler('Обработка ответа не удалась: ' + err.message);
+                    }
+                } else {
+                    log('PeerConnection не в состоянии have-local-offer. Игнорирование ответа.');
                 }
             } else {
                 log('Не ожидается ответа. Игнорирование.');
