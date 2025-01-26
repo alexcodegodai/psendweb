@@ -1,141 +1,154 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC + Ably</title>
+    <title>WebRTC Debug</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            background: #f0f0f0;
-        }
-        video {
-            width: 45%;
-            max-width: 600px;
-            border: 2px solid #333;
-            border-radius: 8px;
-            margin: 10px;
-            background: #000;
-        }
-        #controls {
-            margin: 20px;
-        }
-        button {
-            padding: 12px 24px;
-            font-size: 16px;
-            background: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        #status {
-            color: #666;
-            margin: 15px;
-            font-size: 14px;
-        }
+        video { width: 300px; margin: 10px; border: 1px solid #ccc; }
+        #status { padding: 10px; margin: 10px; background: #f0f0f0; }
     </style>
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
-    <h1>Видеозвонок через Ably</h1>
-    <div id="status">Подключение...</div>
-    <div id="controls">
-        <button id="callBtn">Начать звонок</button>
-    </div>
-    <video id="localVideo" autoplay muted></video>
-    <video id="remoteVideo" autoplay></video>
+    <h1>WebRTC Debug</h1>
+    <div id="status">Initializing...</div>
+    <button id="callBtn">Start Call</button><br>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
 
     <script>
-        // Конфигурация
+        // Config
         const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
         const ICE_SERVERS = [
             { urls: 'stun:stun.l.google.com:19302' },
             { 
-                urls: 'turn:turn.anyfirewall.com:443',
-                username: 'webrtc',
-                credential: 'webrtc'
+                urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+                username: 'test',
+                credential: 'test123'
             }
         ];
 
-        // Элементы DOM
+        // Elements
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
         const callBtn = document.getElementById('callBtn');
         const statusEl = document.getElementById('status');
-        
+
         let localStream;
         let peerConnection;
         let ably;
         let channel;
-        let clientId;
 
-        // Инициализация
+        // Initialize
         init();
 
         async function init() {
             try {
-                // Получение медиапотока
-                localStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: true, 
-                    audio: true 
-                });
+                // 1. Get media stream
+                log('Requesting media devices...');
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = localStream;
-                
-                // Подключение к Ably
+                log('Media devices acquired');
+
+                // 2. Connect to Ably
+                log('Connecting to Ably...');
                 ably = new Ably.Realtime(ABLY_KEY);
+                
                 ably.connection.once('connected', () => {
-                    clientId = ably.auth.clientId;
+                    log('Ably connected. Client ID: ' + ably.auth.clientId);
                     setupChannel();
-                    updateStatus('Готов к подключению', 'green');
-                    callBtn.disabled = false;
                 });
 
+                // 3. Setup call button
+                callBtn.disabled = false;
+                callBtn.onclick = startCall;
+
             } catch (err) {
-                console.error('Ошибка инициализации:', err);
-                updateStatus('Ошибка: ' + err.message, 'red');
+                errorHandler('Initialization failed: ' + err.message);
             }
         }
 
         function setupChannel() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const roomId = urlParams.get('room') || 'default-room';
+            const roomId = getRoomId();
+            log('Joining room: ' + roomId);
             
             channel = ably.channels.get(`room-${roomId}`);
             
-            // Подписка на сообщения
             channel.subscribe('signal', message => {
-                if (message.clientId === clientId) return;
+                if (message.clientId === ably.auth.clientId) {
+                    log('Ignoring self-message');
+                    return;
+                }
+
+                log('Received message:', message.data);
                 
-                const data = message.data;
-                console.log('Получено сообщение:', data);
-                
-                switch(data.type) {
+                switch(message.data.type) {
                     case 'offer':
-                        handleOffer(data.offer);
+                        handleOffer(message.data.offer);
                         break;
                     case 'answer':
-                        handleAnswer(data.answer);
+                        handleAnswer(message.data.answer);
                         break;
                     case 'candidate':
-                        handleCandidate(data.candidate);
+                        handleCandidate(message.data.candidate);
                         break;
                 }
             });
         }
 
-        async function createPeerConnection() {
-            peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-            
-            // Добавление локального потока
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
+        async function startCall() {
+            try {
+                log('Starting call...');
+                peerConnection = createPeerConnection();
 
-            // Обработка ICE кандидатов
-            peerConnection.onicecandidate = event => {
+                // Add local stream
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Create offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                log('Created offer:', offer);
+                
+                channel.publish('signal', {
+                    type: 'offer',
+                    offer: offer
+                });
+
+            } catch (err) {
+                errorHandler('Call failed: ' + err.message);
+            }
+        }
+
+        async function handleOffer(offer) {
+            try {
+                log('Handling remote offer...');
+                peerConnection = createPeerConnection();
+
+                await peerConnection.setRemoteDescription(offer);
+                log('Remote description set');
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                log('Created answer:', answer);
+
+                channel.publish('signal', {
+                    type: 'answer',
+                    answer: answer
+                });
+
+            } catch (err) {
+                errorHandler('Offer handling failed: ' + err.message);
+            }
+        }
+
+        function createPeerConnection() {
+            log('Creating peer connection...');
+            const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+            pc.onicecandidate = event => {
                 if (event.candidate) {
+                    log('Sending ICE candidate:', event.candidate);
                     channel.publish('signal', {
                         type: 'candidate',
                         candidate: event.candidate
@@ -143,77 +156,49 @@
                 }
             };
 
-            // Получение удаленного потока
-            peerConnection.ontrack = event => {
+            pc.ontrack = event => {
+                log('Received remote tracks:', event.streams);
                 remoteVideo.srcObject = event.streams[0];
-                updateStatus('Соединение установлено', 'green');
             };
 
-            peerConnection.oniceconnectionstatechange = () => {
-                updateStatus(`Состояние: ${peerConnection.iceConnectionState}`, 'blue');
+            pc.oniceconnectionstatechange = () => {
+                log('ICE state:', pc.iceConnectionState);
+                statusEl.textContent = 'ICE State: ' + pc.iceConnectionState;
             };
-        }
 
-        async function startCall() {
-            await createPeerConnection();
-            
-            // Создание offer
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            
-            // Отправка offer
-            channel.publish('signal', {
-                type: 'offer',
-                offer: offer
-            });
-            
-            updateStatus('Отправлен запрос на соединение...', 'orange');
-        }
-
-        async function handleOffer(offer) {
-            await createPeerConnection();
-            
-            // Установка удаленного описания
-            await peerConnection.setRemoteDescription(offer);
-            
-            // Создание answer
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            
-            // Отправка answer
-            channel.publish('signal', {
-                type: 'answer',
-                answer: answer
-            });
+            return pc;
         }
 
         async function handleAnswer(answer) {
-            if (!peerConnection.currentRemoteDescription) {
-                await peerConnection.setRemoteDescription(answer);
-            }
+            if (!peerConnection) return;
+            log('Handling answer...');
+            await peerConnection.setRemoteDescription(answer);
         }
 
         async function handleCandidate(candidate) {
+            if (!peerConnection) return;
             try {
+                log('Adding ICE candidate:', candidate);
                 await peerConnection.addIceCandidate(candidate);
             } catch (err) {
-                console.error('Ошибка добавления ICE кандидата:', err);
+                log('Error adding candidate:', err);
             }
         }
 
-        function updateStatus(text, color) {
-            statusEl.textContent = text;
-            statusEl.style.color = color;
+        function getRoomId() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('room') || 'default-room';
         }
 
-        // Очистка
-        window.addEventListener('beforeunload', () => {
-            if (peerConnection) peerConnection.close();
-            if (ably) ably.close();
-        });
+        function log(...args) {
+            console.log('[DEBUG]', ...args);
+        }
 
-        // Обработчик кнопки
-        callBtn.addEventListener('click', startCall);
+        function errorHandler(message) {
+            console.error('[ERROR]', message);
+            statusEl.textContent = 'Error: ' + message;
+            statusEl.style.color = 'red';
+        }
     </script>
 </body>
 </html>
