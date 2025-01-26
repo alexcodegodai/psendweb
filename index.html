@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Видеозвонок</title>
+    <title>WebRTC + Ably</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -36,12 +36,11 @@
             font-size: 14px;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.3.1/dist/peerjs.min.js"></script>
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
-    <h1>WebRTC Видеозвонок</h1>
-    <div id="status">Инициализация...</div>
+    <h1>Видеозвонок через Ably</h1>
+    <div id="status">Подключение...</div>
     <div id="controls">
         <button id="callBtn">Начать звонок</button>
     </div>
@@ -67,9 +66,10 @@
         const statusEl = document.getElementById('status');
         
         let localStream;
-        let peer;
+        let peerConnection;
         let ably;
         let channel;
+        let clientId;
 
         // Инициализация
         init();
@@ -83,23 +83,14 @@
                 });
                 localVideo.srcObject = localStream;
                 
-                // Инициализация Peer
-                peer = new Peer({
-                    config: { iceServers: ICE_SERVERS }
-                });
-
-                // Инициализация Ably
+                // Подключение к Ably
                 ably = new Ably.Realtime(ABLY_KEY);
-                
-                // Получение room ID из URL
-                const urlParams = new URLSearchParams(window.location.search);
-                const roomId = urlParams.get('room') || 'default-room';
-                
-                channel = ably.channels.get(`room-${roomId}`);
-                
-                setupEventListeners();
-                updateStatus('Готов к подключению', 'green');
-                callBtn.disabled = false;
+                ably.connection.once('connected', () => {
+                    clientId = ably.auth.clientId;
+                    setupChannel();
+                    updateStatus('Готов к подключению', 'green');
+                    callBtn.disabled = false;
+                });
 
             } catch (err) {
                 console.error('Ошибка инициализации:', err);
@@ -107,108 +98,107 @@
             }
         }
 
-        function setupEventListeners() {
-            // PeerJS события
-            peer.on('open', id => {
-                console.log('Peer ID:', id);
-                channel.publish('presence', { type: 'join', peerId: id });
-            });
-
-            peer.on('call', call => {
-                console.log('Входящий вызов от:', call.peer);
-                updateStatus('Входящий вызов...', 'orange');
+        function setupChannel() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomId = urlParams.get('room') || 'default-room';
+            
+            channel = ably.channels.get(`room-${roomId}`);
+            
+            // Подписка на сообщения
+            channel.subscribe('signal', message => {
+                if (message.clientId === clientId) return;
                 
-                call.answer(localStream);
-                call.on('stream', handleRemoteStream);
-                call.on('close', () => updateStatus('Соединение закрыто', 'red'));
-            });
-
-            peer.on('error', err => {
-                console.error('PeerJS ошибка:', err);
-                updateStatus('Ошибка: ' + err.message, 'red');
-            });
-
-            // Ably события
-            channel.subscribe('signal', handleAblyMessage);
-            
-            // Кнопка звонка
-            callBtn.addEventListener('click', startCall);
-        }
-
-        function handleAblyMessage(message) {
-            const data = message.data;
-            if (data.peerId === peer.id) return;
-
-            switch(data.type) {
-                case 'offer':
-                    handleOffer(data.offer, data.peerId);
-                    break;
-                case 'answer':
-                    handleAnswer(data.answer);
-                    break;
-                case 'candidate':
-                    handleCandidate(data.candidate);
-                    break;
-            }
-        }
-
-        async function startCall() {
-            updateStatus('Установка соединения...', 'blue');
-            
-            // Получаем список участников комнаты
-            const presence = await channel.presence.get();
-            const otherPeers = presence.filter(m => m.clientId !== peer.id);
-            
-            if (otherPeers.length === 0) {
-                return updateStatus('Нет участников в комнате', 'orange');
-            }
-
-            const call = peer.call(otherPeers[0].clientId, localStream);
-            
-            call.on('stream', handleRemoteStream);
-            call.on('close', () => updateStatus('Соединение закрыто', 'red'));
-            
-            call.on('icecandidate', candidate => {
-                if (candidate) {
-                    channel.publish('signal', {
-                        type: 'candidate',
-                        candidate,
-                        peerId: peer.id
-                    });
+                const data = message.data;
+                console.log('Получено сообщение:', data);
+                
+                switch(data.type) {
+                    case 'offer':
+                        handleOffer(data.offer);
+                        break;
+                    case 'answer':
+                        handleAnswer(data.answer);
+                        break;
+                    case 'candidate':
+                        handleCandidate(data.candidate);
+                        break;
                 }
             });
         }
 
-        function handleRemoteStream(remoteStream) {
-            remoteVideo.srcObject = remoteStream;
-            updateStatus('Соединение установлено', 'green');
+        async function createPeerConnection() {
+            peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+            
+            // Добавление локального потока
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            // Обработка ICE кандидатов
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    channel.publish('signal', {
+                        type: 'candidate',
+                        candidate: event.candidate
+                    });
+                }
+            };
+
+            // Получение удаленного потока
+            peerConnection.ontrack = event => {
+                remoteVideo.srcObject = event.streams[0];
+                updateStatus('Соединение установлено', 'green');
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                updateStatus(`Состояние: ${peerConnection.iceConnectionState}`, 'blue');
+            };
         }
 
-        async function handleOffer(offer, senderId) {
-            const connection = peer.call(senderId, localStream);
-            await connection.setRemoteDescription(offer);
+        async function startCall() {
+            await createPeerConnection();
             
-            const answer = await connection.createAnswer();
-            await connection.setLocalDescription(answer);
+            // Создание offer
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
             
+            // Отправка offer
+            channel.publish('signal', {
+                type: 'offer',
+                offer: offer
+            });
+            
+            updateStatus('Отправлен запрос на соединение...', 'orange');
+        }
+
+        async function handleOffer(offer) {
+            await createPeerConnection();
+            
+            // Установка удаленного описания
+            await peerConnection.setRemoteDescription(offer);
+            
+            // Создание answer
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            
+            // Отправка answer
             channel.publish('signal', {
                 type: 'answer',
-                answer: answer,
-                peerId: peer.id
+                answer: answer
             });
         }
 
         async function handleAnswer(answer) {
-            const connections = peer.connections[answer.peerId];
-            if (connections && connections.length > 0) {
-                await connections[0].setRemoteDescription(answer);
+            if (!peerConnection.currentRemoteDescription) {
+                await peerConnection.setRemoteDescription(answer);
             }
         }
 
-        function handleCandidate(candidate) {
-            peer.connections[candidate.peerId]?.forEach(conn => {
-                conn.addIceCandidate(new RTCIceCandidate(candidate));
-            });
+        async function handleCandidate(candidate) {
+            try {
+                await peerConnection.addIceCandidate(candidate);
+            } catch (err) {
+                console.error('Ошибка добавления ICE кандидата:', err);
+            }
         }
 
         function updateStatus(text, color) {
@@ -216,11 +206,14 @@
             statusEl.style.color = color;
         }
 
-        // Очистка при закрытии
+        // Очистка
         window.addEventListener('beforeunload', () => {
-            if (peer) peer.destroy();
+            if (peerConnection) peerConnection.close();
             if (ably) ably.close();
         });
+
+        // Обработчик кнопки
+        callBtn.addEventListener('click', startCall);
     </script>
 </body>
 </html>
