@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>1:1 Video Fix</title>
+    <title>Video Chat Fix</title>
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
@@ -15,76 +15,73 @@ const roomId = new URLSearchParams(location.search).get('room') || 'default';
 let pc = null;
 let ably = null;
 
-async function start() {
+async function init() {
     try {
         // 1. Инициализация Ably с явным clientId
         ably = new Ably.Realtime({
             key: ABLY_KEY,
-            clientId: 'user-' + Math.random().toString(36).substr(2, 8)
+            clientId: 'user-' + Math.random().toString(36).slice(2, 10)
         });
 
+        // 2. Получение медиапотока
         const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
         document.getElementById('local').srcObject = stream;
-        setupConnection(stream);
+        
+        // 3. Настройка соединения
+        await setupPeerConnection(stream);
+        
     } catch(err) {
-        console.error('Ошибка инициализации:', err);
+        console.error('Init error:', err);
     }
 }
 
-async function setupConnection(stream) {
+async function setupPeerConnection(stream) {
     try {
         pc = new RTCPeerConnection({
             iceServers: [{urls: "stun:stun.l.google.com:19302"}]
         });
 
-        // Добавление треков
+        // 4. Добавление локальных треков
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-        // Настройка канала
+        // 5. Настройка канала Ably
         const channel = ably.channels.get(`video-${roomId}`);
 
-        // 2. Атомарный вход в Presence с обработкой ошибок
+        // 6. Атомарный вход в Presence
         await new Promise((resolve, reject) => {
-            channel.presence.enter({ status: 'connected' }, err => {
+            channel.presence.enter({}, err => {
                 if(err) return reject(err);
                 resolve();
             });
         });
 
-        // 3. Получение участников с защитой от undefined
+        // 7. Определение роли
         const members = await channel.presence.get().catch(() => []);
         const isCaller = members.length === 0;
+        console.log(`You are ${isCaller ? 'Caller' : 'Callee'}`);
 
-        console.log(`Роль: ${isCaller ? 'Caller' : 'Callee'}`);
-
-        // 4. Обработчик сообщений с проверкой clientId
+        // 8. Настройка обработчиков сообщений
         channel.subscribe(msg => {
             if(!msg.clientId || msg.clientId === ably.auth.clientId) return;
             
             switch(msg.name) {
-                case 'offer':
-                    handleOffer(msg.data);
-                    break;
-                case 'answer':
-                    handleAnswer(msg.data);
-                    break;
-                case 'candidate':
-                    handleCandidate(msg.data);
-                    break;
+                case 'offer': handleOffer(msg.data); break;
+                case 'answer': handleAnswer(msg.data); break;
+                case 'candidate': handleCandidate(msg.data); break;
             }
         });
 
-        // 5. Инициация вызова для Caller
+        // 9. Инициирование вызова для Caller
         if(isCaller) {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            channel.publish('offer', offer, { clientId: ably.auth.clientId });
+            channel.publish('offer', offer, {clientId: ably.auth.clientId});
         }
 
-        // 6. Обработчики ICE кандидатов
+        // 10. ICE обработчики
         pc.onicecandidate = e => {
             if(e.candidate) {
-                channel.publish('candidate', e.candidate, { clientId: ably.auth.clientId });
+                channel.publish('candidate', e.candidate, {clientId: ably.auth.clientId});
             }
         };
 
@@ -95,7 +92,7 @@ async function setupConnection(stream) {
         };
 
     } catch(err) {
-        console.error('Ошибка подключения:', err);
+        console.error('Connection error:', err);
     }
 }
 
@@ -104,9 +101,9 @@ async function handleOffer(offer) {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        ably.channels.get(`video-${roomId}`).publish('answer', answer, { clientId: ably.auth.clientId });
+        ably.channels.get(`video-${roomId}`).publish('answer', answer, {clientId: ably.auth.clientId});
     } catch(err) {
-        console.error('Ошибка обработки offer:', err);
+        console.error('Offer handling error:', err);
     }
 }
 
@@ -114,7 +111,7 @@ async function handleAnswer(answer) {
     try {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
     } catch(err) {
-        console.error('Ошибка обработки answer:', err);
+        console.error('Answer handling error:', err);
     }
 }
 
@@ -122,11 +119,12 @@ async function handleCandidate(candidate) {
     try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch(err) {
-        console.error('Ошибка кандидата:', err);
+        console.error('Candidate error:', err);
     }
 }
 
-start();
+// Запуск
+init();
 </script>
 </body>
 </html>
