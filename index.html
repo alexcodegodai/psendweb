@@ -5,7 +5,9 @@
     <style>
         video { width: 300px; margin: 10px; border: 1px solid #ccc; }
         #status { padding: 10px; margin: 10px; background: #f0f0f0; }
+        #callBtn { padding: 10px 20px; font-size: 16px; }
     </style>
+    <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
@@ -17,17 +19,19 @@
 
     <script>
         // Конфигурация
-        const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
+        const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA'; // Ваш Ably API ключ
         const ICE_SERVERS = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            // Временно можно закомментировать TURN-сервер, если не требуется
-            /*
+            { urls: 'stun:stun.l.google.com:19302' }, // STUN сервер Google
             { 
-                urls: 'turn:global.turn.twilio.com:3478?transport=udp',
-                username: 'test',
-                credential: 'test123'
+                urls: 'turn:openrelay.metered.ca:80', 
+                username: 'openrelayproject', 
+                credential: 'openrelayproject' 
+            },
+            { 
+                urls: 'turn:openrelay.metered.ca:443', 
+                username: 'openrelayproject', 
+                credential: 'openrelayproject' 
             }
-            */
         ];
 
         // Элементы страницы
@@ -56,7 +60,7 @@
                 log('Подключение к Ably...');
                 ably = new Ably.Realtime({
                     key: ABLY_KEY,
-                    clientId: 'user-' + Math.random().toString(16).slice(2)
+                    clientId: 'user-' + Math.random().toString(16).slice(2) // Генерация уникального clientId
                 });
                 
                 ably.connection.once('connected', () => {
@@ -174,7 +178,10 @@
 
             pc.ontrack = event => {
                 log('Получен удалённый трек:', event.streams);
-                remoteVideo.srcObject = event.streams[0];
+                if (remoteVideo.srcObject !== event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    log('Удалённый видеопоток установлен');
+                }
             };
 
             pc.oniceconnectionstatechange = () => {
@@ -182,17 +189,31 @@
                 statusEl.textContent = 'Состояние ICE: ' + pc.iceConnectionState;
             };
 
+            pc.onconnectionstatechange = () => {
+                log('Состояние соединения:', pc.connectionState);
+            };
+
+            pc.onicegatheringstatechange = () => {
+                log('Состояние сбора ICE:', pc.iceGatheringState);
+            };
+
             return pc;
         }
 
         async function handleAnswer(answer) {
-            if (!peerConnection) return;
+            if (!peerConnection) {
+                log('PeerConnection не создан для обработки ответа');
+                return;
+            }
             log('Обработка полученного ответа...');
             await peerConnection.setRemoteDescription(answer);
         }
 
         async function handleCandidate(candidate) {
-            if (!peerConnection) return;
+            if (!peerConnection) {
+                log('PeerConnection не создан для обработки ICE-кандидата');
+                return;
+            }
             try {
                 log('Добавление ICE-кандидата:', candidate);
                 await peerConnection.addIceCandidate(candidate);
