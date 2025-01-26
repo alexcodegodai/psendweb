@@ -37,18 +37,18 @@
 
     <script>
         // ======= КОНФИГУРАЦИЯ =======
-        // Ваш Ably-ключ
+        // Ваш Ably-ключ. Убедитесь, что он действителен.
         const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
 
-        // STUN и TURN (на начальном этапе используем только STUN)
+        // STUN и TURN сервера. На начальном этапе используем только STUN.
         const ICE_SERVERS = [
             { urls: 'stun:stun.l.google.com:19302' } // STUN
-            // При необходимости добавьте TURN-сервер
+            // Если необходимо, добавьте собственный TURN-сервер
             /*
             {
-                urls: 'turn:relay.backups.cz:3478',
-                username: 'webrtc',
-                credential: 'turnserver'
+                urls: 'turn:your.turn.server:3478',
+                username: 'your-username',
+                credential: 'your-credential'
             }
             */
         ];
@@ -65,11 +65,12 @@
         let channel;
         let pendingCandidates = [];
 
-        // Роли
+        // Роли участников
         let isCaller = false; // true, если роль=caller
         let hasSetRemoteDescription = false;
         let hasHandledOffer = false;
 
+        // Инициализация приложения
         init();
 
         async function init() {
@@ -88,13 +89,7 @@
                 log('Подключаемся к Ably...');
                 ably = new Ably.Realtime({
                     key: ABLY_KEY,
-                    clientId: 'user-' + Math.random().toString(16).slice(2)
-                });
-
-                ably.connection.once('connected', () => {
-                    log('Ably: подключено. Client ID:', ably.auth.clientId);
-                    setupSignalHandling(); // Подписка на сигналинг до входа в Presence
-                    setupPresence(roomId);
+                    clientId: 'user-' + Math.random().toString(16).slice(2) // Генерируем уникальный clientId
                 });
 
                 // Обработка событий разъединения Ably
@@ -106,15 +101,80 @@
                     log('Ably: соединение потеряно.');
                 });
 
+                // После успешного подключения
+                ably.connection.once('connected', () => {
+                    log('Ably: подключено. Client ID:', ably.auth.clientId);
+                    setupChannelAndPresence(roomId);
+                });
+
             } catch (err) {
                 errorHandler('Ошибка инициализации: ' + err.message);
             }
         }
 
+        // ======= УСТАНОВКА КАНАЛА И PRESENCE =======
+        function setupChannelAndPresence(roomId) {
+            // 1. Создаём или берём существующий канал
+            channel = ably.channels.get(`room-${roomId}`);
+            log('Канал установлен:', `room-${roomId}`);
+
+            // 2. Подписываемся на сигналы
+            setupSignalHandling();
+
+            // 3. Входим в Presence
+            channel.presence.enter({ role: 'participant' }, (err) => {
+                if (err) {
+                    errorHandler('Ошибка при входе в Presence: ' + err.message);
+                    return;
+                }
+                log('Вошли в Presence канала');
+
+                // 4. Получаем текущих участников
+                channel.presence.get((err, members) => {
+                    if (err) {
+                        errorHandler('Ошибка при получении участников Presence: ' + err.message);
+                        return;
+                    }
+
+                    log('Текущие участники Presence:', members.map(m => m.clientId));
+
+                    if (members.length === 1) {
+                        // Если единственный участник, становимся Caller
+                        isCaller = true;
+                        log('Вы первый в комнате — Caller.');
+                        startCall(); // Автоматически начинаем вызов
+                    } else {
+                        // Иначе, становимся Callee
+                        isCaller = false;
+                        log('В комнате уже есть участник — Вы Callee.');
+                        // Ждём входящего вызова
+                    }
+                });
+            });
+
+            // 5. Подписываемся на события Presence (новые участники и уходящие)
+            channel.presence.subscribe((msg) => {
+                if (msg.action === 'enter') {
+                    if (!isCaller && msg.clientId !== ably.auth.clientId) {
+                        log('Новый участник присоединился — Вы Callee.');
+                    }
+                } else if (msg.action === 'leave' || msg.action === 'absent') {
+                    if (isCaller && msg.clientId !== ably.auth.clientId) {
+                        log('Caller: Участник вышел из комнаты.');
+                        // Можно добавить логику для завершения вызова
+                    }
+                    if (!isCaller && msg.clientId !== ably.auth.clientId) {
+                        log('Callee: Caller вышел из комнаты.');
+                        // Можно добавить логику для уведомления пользователя
+                    }
+                }
+            });
+        }
+
         // ======= ПОДПИСКА НА СИГНАЛИНГ =======
         function setupSignalHandling() {
             if (!channel) {
-                log('Канал ещё не определён.');
+                log('Ошибка: канал ещё не определён!');
                 return;
             }
 
@@ -140,63 +200,6 @@
             });
         }
 
-        // ======= PRESENCE ДЛЯ ОПРЕДЕЛЕНИЯ РОЛИ =======
-        function setupPresence(roomId) {
-            channel = ably.channels.get(`room-${roomId}`);
-
-            // Входим в Presence как 'participant'
-            channel.presence.enter({ role: 'participant' }, (err) => {
-                if (err) {
-                    errorHandler('Ошибка при входе в Presence: ' + err.message);
-                    return;
-                }
-                log('Вошли в Presence канала');
-
-                // Получаем текущих участников
-                channel.presence.get((err, members) => {
-                    if (err) {
-                        errorHandler('Ошибка при получении участников Presence: ' + err.message);
-                        return;
-                    }
-
-                    log('Текущие участники Presence:', members.map(m => m.clientId));
-
-                    if (members.length === 1) {
-                        // Если единственный участник, он становится Caller
-                        isCaller = true;
-                        log('Вы первый в комнате — Caller.');
-                        startCall(); // Автоматически начинаем вызов
-                    } else {
-                        // Иначе, роль Callee
-                        isCaller = false;
-                        log('В комнате уже есть участник — Вы Callee.');
-                        // Ждём вызова
-                    }
-
-                    // Можно добавить дополнительную логику здесь, если необходимо
-                });
-            });
-
-            // Подписываемся на события Presence (новые участники)
-            channel.presence.subscribe('enter', (member) => {
-                if (!isCaller && member.clientId !== ably.auth.clientId) {
-                    log('Новый участник присоединился — Вы Callee.');
-                }
-            });
-
-            // Обработка событий выхода участников
-            channel.presence.subscribe('leave', (member) => {
-                if (isCaller && member.clientId !== ably.auth.clientId) {
-                    log('Caller: Участник вышел из комнаты.');
-                    // Можно добавить логику для завершения вызова
-                }
-                if (!isCaller && member.clientId !== ably.auth.clientId) {
-                    log('Callee: Caller вышел из комнаты.');
-                    // Можно добавить логику для уведомления пользователя
-                }
-            });
-        }
-
         // ======= START CALL (только для Caller) =======
         async function startCall() {
             if (!isCaller) {
@@ -211,7 +214,8 @@
             try {
                 log('Caller: Начинаем вызов...');
                 peerConnection = createPeerConnection();
-                // Добавляем треки
+
+                // Добавляем треки из локального потока
                 localStream.getTracks().forEach(track => {
                     peerConnection.addTrack(track, localStream);
                 });
@@ -221,6 +225,7 @@
                 await peerConnection.setLocalDescription(offer);
                 log('Создано предложение (offer).');
 
+                // Отправляем offer через Ably
                 channel.publish('signal', {
                     type: 'offer',
                     offer
@@ -232,7 +237,6 @@
 
         // ======= ОБРАБОТКА OFFER (для Callee) =======
         async function handleOffer(offer) {
-            // Если мы Caller, игнорируем чужой offer
             if (isCaller) {
                 log('Мы Caller, игнорируем чужой offer.');
                 return;
@@ -251,22 +255,24 @@
                 hasHandledOffer = true;
 
                 peerConnection = createPeerConnection();
+
+                // Добавляем треки из локального потока
                 localStream.getTracks().forEach(track => {
                     peerConnection.addTrack(track, localStream);
                 });
 
+                // Устанавливаем remote description
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
                 log('RemoteDescription установлен (offer).');
 
                 // Обработка отложенных ICE-кандидатов
                 processPendingCandidates();
 
-                // Создаём answer
+                // Создаём и отправляем answer
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 log('Callee: Answer создан.');
 
-                // Отправляем answer
                 channel.publish('signal', {
                     type: 'answer',
                     answer
@@ -308,6 +314,7 @@
             log('Создаём RTCPeerConnection...');
             const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
+            // Обработка ICE-кандидатов
             pc.onicecandidate = e => {
                 if (e.candidate) {
                     log('Отправляем ICE-кандидата:', e.candidate);
@@ -318,6 +325,7 @@
                 }
             };
 
+            // Обработка удалённых треков
             pc.ontrack = e => {
                 log('Получен удалённый трек:', e.streams);
                 if (!remoteVideo.srcObject || remoteVideo.srcObject !== e.streams[0]) {
@@ -326,11 +334,13 @@
                 }
             };
 
+            // Отслеживание изменений состояния ICE
             pc.oniceconnectionstatechange = () => {
                 log('ICE Connection State:', pc.iceConnectionState);
                 statusEl.textContent = 'ICE State: ' + pc.iceConnectionState;
             };
 
+            // Отслеживание изменений состояния соединения
             pc.onconnectionstatechange = () => {
                 log('Connection State:', pc.connectionState);
                 if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
@@ -338,6 +348,7 @@
                 }
             };
 
+            // Отслеживание изменений состояния сбора ICE
             pc.onicegatheringstatechange = () => {
                 log('ICE Gathering State:', pc.iceGatheringState);
             };
@@ -348,13 +359,13 @@
         // ======= ОБРАБОТКА ICE-CANDIDATES =======
         async function handleCandidate(candidate) {
             if (!peerConnection) {
-                log('Нет PC, откладываем кандидата.');
+                log('Нет peerConnection, откладываем кандидата.');
                 pendingCandidates.push(new RTCIceCandidate(candidate));
                 return;
             }
 
             if (!peerConnection.remoteDescription) {
-                log('RemoteDescription ещё нет, кандидат в очередь:', candidate);
+                log('RemoteDescription ещё нет, откладываем кандидата:', candidate);
                 pendingCandidates.push(new RTCIceCandidate(candidate));
             } else {
                 try {
@@ -385,7 +396,7 @@
 
         // ======= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =======
         function getParams() {
-            // room=...
+            // Получаем параметр room из URL
             const urlParams = new URLSearchParams(window.location.search);
             const roomId = urlParams.get('room') || 'default-room';
             return { roomId };
