@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>WebRTC Role-Based</title>
+    <title>WebRTC Automatic Role Assignment</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -24,34 +24,21 @@
             min-width: 300px;
             text-align: left;
         }
-        #callBtn {
-            padding: 10px 20px;
-            font-size: 16px;
-            margin: 20px;
-            cursor: pointer;
-            border: none;
-            border-radius: 4px;
-            background-color: #4CAF50;
-            color: white;
-        }
-        /* Скрываем кнопку у Callee */
-        #callBtn.hidden {
-            display: none;
-        }
+        /* Кнопка скрыта полностью, так как она не нужна */
     </style>
-    <!-- Библиотека Ably -->
+    <!-- Подключаем библиотеку Ably -->
     <script src="https://cdn.ably.io/lib/ably.min-1.js"></script>
 </head>
 <body>
-    <h1>WebRTC Role-Based Example</h1>
+    <h1>WebRTC Automatic Role Assignment</h1>
     <div id="status">Инициализация...</div>
-    <button id="callBtn" disabled>Начать Вызов</button><br>
+    <br>
     <video id="localVideo" autoplay muted playsinline></video>
     <video id="remoteVideo" autoplay playsinline></video>
 
     <script>
         // ======= КОНФИГУРАЦИЯ =======
-        // Ваш (тестовый) Ably-ключ
+        // Ваш Ably-ключ
         const ABLY_KEY = 'QBEN4A.NpllMw:gKZi9zUxR4vJRISVloUyOSyO969QngOBQNAvtLSr3ZA';
 
         // STUN и TURN (публичный)
@@ -66,7 +53,6 @@
 
         // ======= ЭЛЕМЕНТЫ СТРАНИЦЫ =======
         const statusEl = document.getElementById('status');
-        const callBtn = document.getElementById('callBtn');
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
 
@@ -86,22 +72,17 @@
 
         async function init() {
             try {
+                // 1. Получаем доступ к камере и микрофону
                 log('Получаем доступ к камере/микрофону...');
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = localStream;
                 log('Локальные медиа-устройства получены.');
 
-                // Определяем roomId и role из URL
-                const { roomId, role } = getParams();
-                log('Комната:', roomId, 'Роль:', role);
+                // 2. Определяем roomId из URL
+                const { roomId } = getParams();
+                log('Комната:', roomId);
 
-                isCaller = (role === 'caller');
-                // Если мы Callee, сразу прячем кнопку
-                if (!isCaller) {
-                    callBtn.classList.add('hidden');
-                }
-
-                // Подключаемся к Ably
+                // 3. Подключаемся к Ably
                 log('Подключаемся к Ably...');
                 ably = new Ably.Realtime({
                     key: ABLY_KEY,
@@ -110,22 +91,59 @@
 
                 ably.connection.once('connected', () => {
                     log('Ably: подключено. Client ID:', ably.auth.clientId);
-                    setupChannel(roomId);
+                    setupPresence(roomId);
                 });
-
-                // Вешаем обработчик на кнопку вызова (только для Caller)
-                callBtn.onclick = startCall;
-                callBtn.disabled = !isCaller;
 
             } catch (err) {
                 errorHandler('Ошибка инициализации: ' + err.message);
             }
         }
 
-        function setupChannel(roomId) {
+        // ======= PRESENCE ДЛЯ ОПРЕДЕЛЕНИЯ РОЛИ =======
+        function setupPresence(roomId) {
             channel = ably.channels.get(`room-${roomId}`);
 
-            // Подписываемся на сигналинг
+            // Входим в Presence как 'participant'
+            channel.presence.enter({ role: 'participant' }, (err) => {
+                if (err) {
+                    errorHandler('Ошибка при входе в Presence: ' + err.message);
+                    return;
+                }
+                log('Вошли в Presence канала');
+            });
+
+            // Получаем текущих участников
+            channel.presence.get((err, members) => {
+                if (err) {
+                    errorHandler('Ошибка при получении участников Presence: ' + err.message);
+                    return;
+                }
+
+                if (members.length === 1) {
+                    // Если единственный участник, он становится Caller
+                    isCaller = true;
+                    log('Вы первый в комнате — Caller.');
+                    startCall(); // Автоматически начинаем вызов
+                } else {
+                    // Иначе, роль Callee
+                    isCaller = false;
+                    log('В комнате уже есть участник — Вы Callee.');
+                    // Ждём вызова
+                }
+
+                setupSignalHandling();
+            });
+
+            // Подписываемся на события Presence (новые участники)
+            channel.presence.subscribe('enter', (member) => {
+                if (!isCaller && member.clientId !== ably.auth.clientId) {
+                    log('Новый участник присоединился — Вы Callee.');
+                }
+            });
+        }
+
+        // ======= ПОДПИСКА НА СИГНАЛИНГ =======
+        function setupSignalHandling() {
             channel.subscribe('signal', msg => {
                 // Игнорируем свои сообщения
                 if (msg.clientId === ably.auth.clientId) {
@@ -161,8 +179,6 @@
 
             try {
                 log('Caller: Начинаем вызов...');
-                callBtn.disabled = true;
-
                 peerConnection = createPeerConnection();
                 // Добавляем треки
                 localStream.getTracks().forEach(track => {
@@ -316,6 +332,7 @@
             }
         }
 
+        // ======= ОБРАБОТКА ОТЛОЖЕННЫХ КАНДИДАТОВ =======
         function processPendingCandidates() {
             if (!peerConnection || !peerConnection.remoteDescription) return;
             if (pendingCandidates.length > 0) {
@@ -332,13 +349,12 @@
             }
         }
 
-        // ======= ВСПОМОГАТЕЛЬНОЕ =======
+        // ======= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =======
         function getParams() {
-            // room=...&role=...
+            // room=...
             const urlParams = new URLSearchParams(window.location.search);
             const roomId = urlParams.get('room') || 'default-room';
-            const role = urlParams.get('role') || 'callee';
-            return { roomId, role };
+            return { roomId };
         }
 
         function log(...args) {
